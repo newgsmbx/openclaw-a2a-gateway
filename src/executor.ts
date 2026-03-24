@@ -1,5 +1,8 @@
 import { v4 as uuidv4 } from "uuid";
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 
 import type { Message, Part, Task } from "@a2a-js/sdk";
 import type { AgentExecutor, ExecutionEventBus, RequestContext } from "@a2a-js/sdk/server";
@@ -462,6 +465,25 @@ let cachedDeviceIdentity: { publicKey: string; privateKey: crypto.KeyObject; dev
 
 function getOrCreateDeviceIdentity(): { publicKey: string; privateKey: crypto.KeyObject; deviceId: string } {
   if (cachedDeviceIdentity) return cachedDeviceIdentity;
+
+  // Try to load OpenClaw's own device identity first (so the gateway recognises us as a paired device).
+  const openclawHome = process.env.OPENCLAW_HOME || path.join(os.homedir(), ".openclaw");
+  const deviceJsonPath = path.join(openclawHome, "identity", "device.json");
+  try {
+    const raw = fs.readFileSync(deviceJsonPath, "utf-8");
+    const json = JSON.parse(raw) as { deviceId?: string; publicKeyPem?: string; privateKeyPem?: string };
+    if (json.deviceId && json.publicKeyPem && json.privateKeyPem) {
+      const privateKey = crypto.createPrivateKey(json.privateKeyPem);
+      const publicKey = crypto.createPublicKey(json.publicKeyPem);
+      const publicKeyRaw = publicKey.export({ type: "spki", format: "der" });
+      const rawBytes = publicKeyRaw.subarray(12);
+      const publicKeyB64Url = rawBytes.toString("base64url");
+      cachedDeviceIdentity = { publicKey: publicKeyB64Url, privateKey, deviceId: json.deviceId };
+      return cachedDeviceIdentity;
+    }
+  } catch {
+    // Fall through to ephemeral key generation
+  }
 
   const { publicKey, privateKey } = crypto.generateKeyPairSync("ed25519");
   const publicKeyRaw = publicKey.export({ type: "spki", format: "der" });
